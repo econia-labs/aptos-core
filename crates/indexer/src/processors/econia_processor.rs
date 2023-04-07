@@ -259,7 +259,7 @@ impl EconiaRedisCacher {
             .get(&price)
             .map_or(0, |v| v.iter().fold(0, |i, s: &Order| i + s.size));
         let channel_name = format!("{}:{}", &self.config.book_prefix, mkt_id);
-        let update = Update::BookPriceLevel(PriceLevel {
+        let update = Update::PriceLevels(PriceLevel {
             market_id: mkt_id,
             price,
             size: cum_size,
