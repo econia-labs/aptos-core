@@ -26,6 +26,7 @@ use econia_types::{
 };
 use field_count::FieldCount;
 use once_cell::sync::Lazy;
+use redis::Commands;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -196,9 +197,7 @@ impl EconiaRedisCacher {
         conn: &mut redis::Connection,
         mkt_id: BigDecimal,
     ) -> anyhow::Result<()> {
-        let mut cmd = redis::cmd("HSET");
-        cmd.arg(&self.config.markets).arg(mkt_id.to_string()).arg(1);
-        cmd.query::<usize>(conn)?;
+        conn.hset(&self.config.markets, mkt_id.to_string(), 1)?;
         let mkt_id = mkt_id.to_u64().expect("failed to convert to u64");
 
         if self.books.get(&mkt_id).is_none() {
@@ -213,9 +212,7 @@ impl EconiaRedisCacher {
         conn: &mut redis::Connection,
         mkt_id: &BigDecimal,
     ) -> anyhow::Result<()> {
-        let mut cmd = redis::cmd("HDEL");
-        cmd.arg(&self.config.markets).arg(mkt_id.to_string());
-        cmd.query::<usize>(conn)?;
+        conn.hdel(&self.config.markets, mkt_id.to_string())?;
         let mkt_id = mkt_id.to_u64().expect("failed to convert to u64");
         self.books.remove(&mkt_id);
         Ok(())
@@ -232,54 +229,44 @@ impl EconiaRedisCacher {
         Ok(())
     }
 
-    fn send_order_update(
-        conn: &mut redis::Connection,
-        order_prefix: &str,
-        order: &Order,
-    ) -> anyhow::Result<()> {
-        let channel_name = format!("{}:{}", order_prefix, order.market_id);
+    fn send_order_update(&self, conn: &mut redis::Connection, order: &Order) -> anyhow::Result<()> {
+        let channel_name = format!("{}:{}", &self.config.order_prefix, order.market_id);
         let message = serde_json::to_string(order)?;
-        let mut cmd = redis::cmd("PUBLISH");
-        cmd.arg(&channel_name).arg(&message);
-        cmd.query::<usize>(conn)?;
+        conn.publish(channel_name, message)?;
         Ok(())
     }
 
     fn send_fill(
+        &self,
         conn: &mut redis::Connection,
-        fill_prefix: &str,
         taker_event: &TakerEvent,
         fill: &Fill,
     ) -> anyhow::Result<()> {
-        let channel_name = format!("{}:{}", fill_prefix, taker_event.market_id);
+        let channel_name = format!("{}:{}", &self.config.fill_prefix, taker_event.market_id);
         let message = serde_json::to_string(fill)?;
-        let mut cmd = redis::cmd("PUBLISH");
-        cmd.arg(&channel_name).arg(&message);
-        cmd.query::<usize>(conn)?;
+        conn.publish(channel_name, message)?;
         Ok(())
     }
 
     fn send_price_level_update(
+        &self,
         conn: &mut redis::Connection,
-        book_prefix: &str,
         mkt_id: u64,
-        book: &OrderBook,
         side: Side,
         price: u64,
     ) -> anyhow::Result<()> {
+        let book = self.books.get(&mkt_id).expect("book has gone missing?");
         let cum_size = book
             .get_side(side)
             .get(&price)
             .map_or(0, |v| v.iter().fold(0, |i, s: &Order| i + s.size));
-        let channel_name = format!("{}:{}", book_prefix, mkt_id);
+        let channel_name = format!("{}:{}", &self.config.book_prefix, mkt_id);
         let message = serde_json::json!({
             "price": price,
             "size": cum_size
         });
         let message = serde_json::to_string(&message)?;
-        let mut cmd = redis::cmd("PUBLISH");
-        cmd.arg(&channel_name).arg(&message);
-        cmd.query::<usize>(conn)?;
+        conn.publish(channel_name, message)?;
         Ok(())
     }
 
@@ -288,88 +275,51 @@ impl EconiaRedisCacher {
         conn: &mut redis::Connection,
         e: MakerEvent,
     ) -> anyhow::Result<()> {
-        let Some(book) = self.books.get_mut(&e.market_id) else {
+        if !self.books.contains_key(&e.market_id) {
             panic!("invalid state, market is missing")
         };
 
-        match MakerEventType::try_from(e.event_type)? {
+        let removed_order = match MakerEventType::try_from(e.event_type)? {
             MakerEventType::Cancel => {
+                let book = self.books.get_mut(&e.market_id).unwrap();
                 let mut order = book.remove_order(e.market_order_id);
                 order.order_state = OrderState::Cancelled;
-                Self::send_price_level_update(
-                    conn,
-                    &self.config.book_prefix,
-                    e.market_id,
-                    book,
-                    order.side,
-                    order.price,
-                )?;
-                Self::send_order_update(conn, &self.config.order_prefix, &order)?;
+                Some(order)
             },
             MakerEventType::Change => {
                 let pop_and_reinsert = {
+                    let book = self.books.get(&e.market_id).unwrap();
                     let order = book.get_order(e.market_order_id);
                     (order.price != e.price) || (e.size > order.size)
                 };
                 if pop_and_reinsert {
+                    let book = self.books.get_mut(&e.market_id).unwrap();
                     let mut order = book.remove_order(e.market_order_id);
-                    let side = order.side;
-                    Self::send_price_level_update(
-                        conn,
-                        &self.config.book_prefix,
-                        e.market_id,
-                        book,
-                        side,
-                        order.price,
-                    )?;
+                    let old_price = order.price;
                     order.size = e.size;
                     order.price = e.price;
                     book.add_order(order);
-                    Self::send_price_level_update(
-                        conn,
-                        &self.config.book_prefix,
-                        e.market_id,
-                        book,
-                        side,
-                        e.price,
-                    )?;
+                    self.send_price_level_update(conn, e.market_id, e.side.into(), old_price)?;
                 } else {
+                    let book = self.books.get_mut(&e.market_id).unwrap();
                     let order = book.get_order_mut(e.market_order_id);
-                    let side = order.side;
                     order.size = e.size;
                     order.price = e.price;
-                    Self::send_price_level_update(
-                        conn,
-                        &self.config.book_prefix,
-                        e.market_id,
-                        book,
-                        side,
-                        e.price,
-                    )?;
                 }
 
-                let order = book.get_order(e.market_order_id);
-                Self::send_order_update(conn, &self.config.order_prefix, order)?;
+                None
             },
             MakerEventType::Evict => {
+                let book = self.books.get_mut(&e.market_id).unwrap();
                 let mut order = book.remove_order(e.market_order_id);
                 order.order_state = OrderState::Evicted;
-                Self::send_price_level_update(
-                    conn,
-                    &self.config.book_prefix,
-                    e.market_id,
-                    book,
-                    order.side,
-                    order.price,
-                )?;
-                Self::send_order_update(conn, &self.config.order_prefix, &order)?;
+                Some(order)
             },
             MakerEventType::Place => {
-                let side = e.side.into();
                 let o = Order {
                     market_order_id: e.market_order_id,
                     market_id: e.market_id,
-                    side,
+                    side: e.side.into(),
                     size: e.size,
                     price: e.price,
                     user_address: e.user_address,
@@ -378,19 +328,18 @@ impl EconiaRedisCacher {
                     created_at: e.time,
                 };
 
-                book.add_order(o.clone());
-                Self::send_price_level_update(
-                    conn,
-                    &self.config.book_prefix,
-                    e.market_id,
-                    book,
-                    side,
-                    e.price,
-                )?;
-                Self::send_order_update(conn, &self.config.order_prefix, &o)?;
+                let book = self.books.get_mut(&e.market_id).unwrap();
+                book.add_order(o);
+                None
             },
         };
-        Ok(())
+
+        let book = self.books.get(&e.market_id).unwrap();
+        let order = removed_order
+            .as_ref()
+            .unwrap_or_else(|| book.get_order(e.market_order_id));
+        self.send_order_update(conn, order)?;
+        self.send_price_level_update(conn, e.market_id, order.side, order.price)
     }
 
     fn handle_taker_event(
@@ -398,46 +347,36 @@ impl EconiaRedisCacher {
         conn: &mut redis::Connection,
         e: TakerEvent,
     ) -> anyhow::Result<()> {
-        let Some(book) = self.books.get_mut(&e.market_id) else {
+        if !self.books.contains_key(&e.market_id) {
             panic!("invalid state, market is missing")
         };
 
-        let remove_order = {
-            let order = book.get_order_mut(e.market_order_id);
-            let fill = Fill {
-                market_id: e.market_id,
-                maker_order_id: e.market_order_id,
-                maker: e.maker.clone(),
-                maker_side: order.side,
-                custodian_id: order.custodian_id,
-                size: e.size,
-                price: e.price,
-                time: e.time,
-            };
-            Self::send_fill(conn, &self.config.fill_prefix, &e, &fill)?;
-            order.size = order.size.checked_sub(e.size).unwrap_or_default();
-            let remove_order = order.size == 0;
-            if remove_order {
-                order.order_state = OrderState::Filled;
-            }
-            Self::send_order_update(conn, &self.config.order_prefix, order)?;
-            remove_order
+        let book = self.books.get_mut(&e.market_id).unwrap();
+        let order = book.get_order_mut(e.market_order_id);
+        order.size = order.size.checked_sub(e.size).unwrap_or_default();
+        let fill = Fill {
+            market_id: e.market_id,
+            maker_order_id: e.market_order_id,
+            maker: e.maker.clone(),
+            maker_side: order.side,
+            custodian_id: order.custodian_id.clone(),
+            size: e.size,
+            price: e.price,
+            time: e.time,
         };
 
-        if remove_order {
-            book.remove_order(e.market_order_id);
+        if order.size == 0 {
+            order.order_state = OrderState::Filled;
+            let order = book.remove_order(e.market_order_id);
+            self.send_order_update(conn, &order)?;
+        } else {
+            let book = self.books.get(&e.market_id).unwrap();
+            let order = book.get_order(e.market_order_id);
+            self.send_order_update(conn, order)?;
         }
 
-        Self::send_price_level_update(
-            conn,
-            &self.config.book_prefix,
-            e.market_id,
-            book,
-            e.side.into(),
-            e.price,
-        )?;
-
-        Ok(())
+        self.send_fill(conn, &e, &fill)?;
+        self.send_price_level_update(conn, e.market_id, e.side.into(), e.price)
     }
 
     fn start(&mut self, books: Vec<BigDecimal>) {
