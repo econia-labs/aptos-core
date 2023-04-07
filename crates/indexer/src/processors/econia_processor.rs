@@ -282,19 +282,23 @@ impl EconiaRedisCacher {
         let removed_order = match MakerEventType::try_from(e.event_type)? {
             MakerEventType::Cancel => {
                 let book = self.books.get_mut(&e.market_id).unwrap();
-                let mut order = book.remove_order(e.market_order_id);
+                let mut order = book
+                    .remove_order(e.market_order_id)
+                    .expect("order not found");
                 order.order_state = OrderState::Cancelled;
                 Some(order)
             },
             MakerEventType::Change => {
                 let pop_and_reinsert = {
                     let book = self.books.get(&e.market_id).unwrap();
-                    let order = book.get_order(e.market_order_id);
+                    let order = book.get_order(e.market_order_id).expect("order not found");
                     (order.price != e.price) || (e.size > order.size)
                 };
                 if pop_and_reinsert {
                     let book = self.books.get_mut(&e.market_id).unwrap();
-                    let mut order = book.remove_order(e.market_order_id);
+                    let mut order = book
+                        .remove_order(e.market_order_id)
+                        .expect("order not found");
                     let old_price = order.price;
                     order.size = e.size;
                     order.price = e.price;
@@ -302,7 +306,9 @@ impl EconiaRedisCacher {
                     self.send_price_level_update(conn, e.market_id, e.side.into(), old_price)?;
                 } else {
                     let book = self.books.get_mut(&e.market_id).unwrap();
-                    let order = book.get_order_mut(e.market_order_id);
+                    let order = book
+                        .get_order_mut(e.market_order_id)
+                        .expect("order not found");
                     order.size = e.size;
                     order.price = e.price;
                 }
@@ -311,7 +317,9 @@ impl EconiaRedisCacher {
             },
             MakerEventType::Evict => {
                 let book = self.books.get_mut(&e.market_id).unwrap();
-                let mut order = book.remove_order(e.market_order_id);
+                let mut order = book
+                    .remove_order(e.market_order_id)
+                    .expect("order not found");
                 order.order_state = OrderState::Evicted;
                 Some(order)
             },
@@ -337,7 +345,7 @@ impl EconiaRedisCacher {
         let book = self.books.get(&e.market_id).unwrap();
         let order = removed_order
             .as_ref()
-            .unwrap_or_else(|| book.get_order(e.market_order_id));
+            .unwrap_or_else(|| book.get_order(e.market_order_id).expect("order not found"));
         self.send_order_update(conn, order)?;
         self.send_price_level_update(conn, e.market_id, order.side, order.price)
     }
@@ -352,8 +360,12 @@ impl EconiaRedisCacher {
         };
 
         let book = self.books.get_mut(&e.market_id).unwrap();
-        let order = book.get_order_mut(e.market_order_id);
+        let order = book
+            .get_order_mut(e.market_order_id)
+            .expect("order not found");
+
         order.size = order.size.checked_sub(e.size).unwrap_or_default();
+
         let fill = Fill {
             market_id: e.market_id,
             maker_order_id: e.market_order_id,
@@ -367,11 +379,13 @@ impl EconiaRedisCacher {
 
         if order.size == 0 {
             order.order_state = OrderState::Filled;
-            let order = book.remove_order(e.market_order_id);
+            let order = book
+                .remove_order(e.market_order_id)
+                .expect("order not found");
             self.send_order_update(conn, &order)?;
         } else {
             let book = self.books.get(&e.market_id).unwrap();
-            let order = book.get_order(e.market_order_id);
+            let order = book.get_order(e.market_order_id).expect("order not found");
             self.send_order_update(conn, order)?;
         }
 
