@@ -20,8 +20,9 @@ use dashmap::DashMap;
 use diesel::{result::Error, PgConnection};
 use econia_db::models::{self, events::MakerEventType, market::MarketEventType, IntoInsertable};
 use econia_types::{
-    book::OrderBook,
+    book::{OrderBook, PriceLevel},
     events::{MakerEvent, TakerEvent},
+    message::Update,
     order::{Fill, Order, OrderState, Side},
 };
 use field_count::FieldCount;
@@ -231,19 +232,16 @@ impl EconiaRedisCacher {
 
     fn send_order_update(&self, conn: &mut redis::Connection, order: &Order) -> anyhow::Result<()> {
         let channel_name = format!("{}:{}", &self.config.order_prefix, order.market_id);
-        let message = serde_json::to_string(order)?;
+        let update = Update::Orders(order.clone());
+        let message = serde_json::to_string(&update)?;
         conn.publish(channel_name, message)?;
         Ok(())
     }
 
-    fn send_fill(
-        &self,
-        conn: &mut redis::Connection,
-        taker_event: &TakerEvent,
-        fill: &Fill,
-    ) -> anyhow::Result<()> {
-        let channel_name = format!("{}:{}", &self.config.fill_prefix, taker_event.market_id);
-        let message = serde_json::to_string(fill)?;
+    fn send_fill(&self, conn: &mut redis::Connection, fill: &Fill) -> anyhow::Result<()> {
+        let channel_name = format!("{}:{}", &self.config.fill_prefix, fill.market_id);
+        let update = Update::Fills(fill.clone());
+        let message = serde_json::to_string(&update)?;
         conn.publish(channel_name, message)?;
         Ok(())
     }
@@ -261,11 +259,12 @@ impl EconiaRedisCacher {
             .get(&price)
             .map_or(0, |v| v.iter().fold(0, |i, s: &Order| i + s.size));
         let channel_name = format!("{}:{}", &self.config.book_prefix, mkt_id);
-        let message = serde_json::json!({
-            "price": price,
-            "size": cum_size
+        let update = Update::BookPriceLevel(PriceLevel {
+            market_id: mkt_id,
+            price,
+            size: cum_size,
         });
-        let message = serde_json::to_string(&message)?;
+        let message = serde_json::to_string(&update)?;
         conn.publish(channel_name, message)?;
         Ok(())
     }
@@ -303,7 +302,7 @@ impl EconiaRedisCacher {
                     order.size = e.size;
                     order.price = e.price;
                     book.add_order(order);
-                    self.send_price_level_update(conn, e.market_id, e.side.into(), old_price)?;
+                    self.send_price_level_update(conn, e.market_id, e.side, old_price)?;
                 } else {
                     let book = self.books.get_mut(&e.market_id).unwrap();
                     let order = book
@@ -327,7 +326,7 @@ impl EconiaRedisCacher {
                 let o = Order {
                     market_order_id: e.market_order_id,
                     market_id: e.market_id,
-                    side: e.side.into(),
+                    side: e.side,
                     size: e.size,
                     price: e.price,
                     user_address: e.user_address,
@@ -371,7 +370,7 @@ impl EconiaRedisCacher {
             maker_order_id: e.market_order_id,
             maker: e.maker.clone(),
             maker_side: order.side,
-            custodian_id: order.custodian_id.clone(),
+            custodian_id: order.custodian_id,
             size: e.size,
             price: e.price,
             time: e.time,
@@ -389,8 +388,8 @@ impl EconiaRedisCacher {
             self.send_order_update(conn, order)?;
         }
 
-        self.send_fill(conn, &e, &fill)?;
-        self.send_price_level_update(conn, e.market_id, e.side.into(), e.price)
+        self.send_fill(conn, &fill)?;
+        self.send_price_level_update(conn, e.market_id, e.side, e.price)
     }
 
     fn start(&mut self, books: Vec<BigDecimal>) {
