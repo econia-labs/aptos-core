@@ -12,7 +12,6 @@ use crate::{
 };
 use anyhow::Context;
 use aptos_api_types::Transaction;
-use aptos_types::account_address::AccountAddress;
 use async_trait::async_trait;
 use bigdecimal::{BigDecimal, ToPrimitive};
 use chrono::{DateTime, Utc};
@@ -22,15 +21,14 @@ use diesel::{result::Error, PgConnection};
 use econia_db::models::{self, events::MakerEventType, market::MarketEventType, IntoInsertable};
 use econia_types::{
     book::OrderBook,
+    events::{MakerEvent, TakerEvent},
     order::{Fill, Order, OrderState, Side},
 };
 use field_count::FieldCount;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::RwLock,
-};
+use serde_json::{json, Value};
+use std::collections::HashMap;
 
 pub const NAME: &str = "econia_processor";
 
@@ -70,63 +68,6 @@ static EVENT_TYPES: Lazy<Vec<String>> = Lazy::new(|| {
     ]
 });
 
-static CURRENT_BLOCK_TIME: Lazy<RwLock<DateTime<Utc>>> =
-    Lazy::new(|| RwLock::new(DateTime::<Utc>::MIN_UTC));
-
-#[derive(Debug, Deserialize, Clone)]
-struct TakerEvent {
-    market_id: u64,
-    side: bool,
-    market_order_id: u64,
-    maker: AccountAddress,
-    custodian_id: Option<u64>,
-    size: u64,
-    price: u64,
-}
-
-impl From<TakerEvent> for models::events::TakerEvent {
-    fn from(e: TakerEvent) -> Self {
-        Self {
-            market_id: e.market_id.into(),
-            side: e.side.into(),
-            market_order_id: e.market_order_id.into(),
-            maker: e.maker.to_hex_literal(),
-            custodian_id: e.custodian_id.map(|c| c.into()),
-            size: e.size.into(),
-            price: e.price.into(),
-            time: *CURRENT_BLOCK_TIME.read().unwrap(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct MakerEvent {
-    market_id: u64,
-    side: bool,
-    market_order_id: u64,
-    user_address: AccountAddress,
-    custodian_id: Option<u64>,
-    event_type: u8,
-    size: u64,
-    price: u64,
-}
-
-impl From<MakerEvent> for models::events::MakerEvent {
-    fn from(e: MakerEvent) -> Self {
-        Self {
-            market_id: e.market_id.into(),
-            side: e.side.into(),
-            market_order_id: e.market_order_id.into(),
-            user_address: e.user_address.to_hex_literal(),
-            custodian_id: e.custodian_id.map(|c| c.into()),
-            event_type: e.event_type.try_into().unwrap(),
-            size: e.size.into(),
-            price: e.price.into(),
-            time: *CURRENT_BLOCK_TIME.read().unwrap(),
-        }
-    }
-}
-
 #[derive(Debug, Deserialize, Clone)]
 struct MarketRegistrationEvent {
     market_id: u64,
@@ -137,13 +78,14 @@ struct MarketRegistrationEvent {
     tick_size: u64,
     min_size: u64,
     underwriter_id: u64,
+    time: DateTime<Utc>,
 }
 
 impl From<MarketRegistrationEvent> for models::market::MarketRegistrationEvent {
     fn from(e: MarketRegistrationEvent) -> Self {
         Self {
             market_id: e.market_id.into(),
-            time: *CURRENT_BLOCK_TIME.read().unwrap(),
+            time: e.time,
             base_account_address: Some(e.base_type.account_address),
             base_module_name: Some(e.base_type.module_name),
             base_struct_name: Some(e.base_type.struct_name),
@@ -181,6 +123,7 @@ struct RecognizedMarketInfo {
 struct RecognizedMarketEvent {
     trading_pair: TradingPair,
     recognized_market_info: Option<RecognizedMarketInfo>,
+    time: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -306,20 +249,10 @@ impl EconiaRedisCacher {
         conn: &mut redis::Connection,
         fill_prefix: &str,
         taker_event: &TakerEvent,
-        order: &Order,
+        fill: &Fill,
     ) -> anyhow::Result<()> {
-        let fill = Fill {
-            market_id: taker_event.market_id,
-            maker_order_id: taker_event.market_order_id,
-            maker: taker_event.maker.to_hex_literal(),
-            maker_side: order.side,
-            custodian_id: order.custodian_id,
-            size: taker_event.size,
-            price: taker_event.price,
-            time: *CURRENT_BLOCK_TIME.read().unwrap(),
-        };
         let channel_name = format!("{}:{}", fill_prefix, taker_event.market_id);
-        let message = serde_json::to_string(&fill)?;
+        let message = serde_json::to_string(fill)?;
         let mut cmd = redis::cmd("PUBLISH");
         cmd.arg(&channel_name).arg(&message);
         cmd.query::<usize>(conn)?;
@@ -439,10 +372,10 @@ impl EconiaRedisCacher {
                     side,
                     size: e.size,
                     price: e.price,
-                    user_address: e.user_address.to_hex_literal(),
+                    user_address: e.user_address,
                     custodian_id: e.custodian_id,
                     order_state: OrderState::Open,
-                    created_at: *CURRENT_BLOCK_TIME.read().unwrap(),
+                    created_at: e.time,
                 };
 
                 book.add_order(o.clone());
@@ -471,7 +404,17 @@ impl EconiaRedisCacher {
 
         let remove_order = {
             let order = book.get_order_mut(e.market_order_id);
-            Self::send_fill(conn, &self.config.fill_prefix, &e, order)?;
+            let fill = Fill {
+                market_id: e.market_id,
+                maker_order_id: e.market_order_id,
+                maker: e.maker.clone(),
+                maker_side: order.side,
+                custodian_id: order.custodian_id,
+                size: e.size,
+                price: e.price,
+                time: e.time,
+            };
+            Self::send_fill(conn, &self.config.fill_prefix, &e, &fill)?;
             order.size = order.size.checked_sub(e.size).unwrap_or_default();
             let remove_order = order.size == 0;
             if remove_order {
@@ -643,12 +586,12 @@ impl EconiaTransactionProcessor {
                 .expect("block height not found in block_to_time map");
 
             let utc_time = chrono::TimeZone::from_utc_datetime(&Utc, current_time);
-            if utc_time != *CURRENT_BLOCK_TIME.read().expect("failed to lock") {
-                let mut current_block_time = CURRENT_BLOCK_TIME.write().expect("failed to lock");
-                *current_block_time = utc_time;
-            }
 
-            let event_wrapper: EventWrapper = serde_json::from_value(e.data.clone())
+            let mut event_wrapper = serde_json::from_value::<Value>(e.data.clone())
+                .map_err(|e| Error::DeserializationError(Box::new(e)))?;
+            let obj_map = event_wrapper.as_object_mut().unwrap();
+            obj_map.insert("time".to_string(), json!(utc_time));
+            let event_wrapper = serde_json::from_value::<EventWrapper>(event_wrapper)
                 .map_err(|e| Error::DeserializationError(Box::new(e)))?;
 
             match event_wrapper {
@@ -771,7 +714,7 @@ impl EconiaTransactionProcessor {
                 let new_min_size = BigDecimal::from(r.min_size);
                 events.push(models::market::RecognizedMarketEvent {
                     market_id: mkt.market_id.clone(),
-                    time: *CURRENT_BLOCK_TIME.read().unwrap(),
+                    time: e.time,
                     event_type: if mkt.lot_size == new_lot_size
                         && mkt.tick_size == new_tick_size
                         && mkt.min_size == new_min_size
@@ -796,7 +739,7 @@ impl EconiaTransactionProcessor {
                 let mkt_id = self.base_quote_to_market_id.get(&key).unwrap();
                 events.push(models::market::RecognizedMarketEvent {
                     market_id: mkt_id.clone(),
-                    time: *CURRENT_BLOCK_TIME.read().unwrap(),
+                    time: e.time,
                     event_type: MarketEventType::Remove,
                     lot_size: None,
                     tick_size: None,
