@@ -172,7 +172,7 @@ struct MakerEvent {
     side: bool,
     size: String,
     r#type: u8,
-    user_address: String,
+    user: String,
     time: String,
 }
 
@@ -190,7 +190,7 @@ impl From<MakerEvent> for models::events::MakerEvent {
             side: e.side.into(),
             size: e.size.parse().unwrap(),
             event_type: e.r#type.try_into().unwrap(),
-            user_address: e.user_address,
+            user_address: e.user,
             time: e.time.parse().unwrap(),
         }
     }
