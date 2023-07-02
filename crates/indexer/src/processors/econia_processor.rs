@@ -26,13 +26,7 @@ use diesel::{result::Error, PgConnection};
 use econia_db::{
     add_maker_event, add_taker_event, create_coin,
     error::DbError,
-    models::{
-        self,
-        coin::Coin,
-        events::MakerEventType,
-        market::MarketEventType,
-        ToInsertable,
-    },
+    models::{self, coin::Coin, events::MakerEventType, market::MarketEventType, ToInsertable},
     register_market,
 };
 use econia_types::{
@@ -351,6 +345,7 @@ impl EconiaRedisCacher {
         mkt_id: u64,
         side: Side,
         price: u64,
+        time: DateTime<Utc>,
     ) -> anyhow::Result<()> {
         let book = self.books.get(&mkt_id).expect("book has gone missing?");
         let cum_size = book
@@ -360,8 +355,10 @@ impl EconiaRedisCacher {
         let channel_name = format!("{}:{}", &self.config.book_prefix, mkt_id);
         let update = Update::PriceLevels(PriceLevelWithId {
             market_id: mkt_id,
+            side,
             price,
             size: cum_size,
+            timestamp: time,
         });
         let message = serde_json::to_string(&update)?;
         conn.publish(channel_name, message)?;
@@ -404,7 +401,7 @@ impl EconiaRedisCacher {
                     order.size = e.size;
                     order.price = e.price;
                     book.add_order(order);
-                    self.send_price_level_update(conn, e.market_id, e.side, old_price)?;
+                    self.send_price_level_update(conn, e.market_id, e.side, old_price, e.time)?;
                 } else {
                     let book = self.books.get_mut(&e.market_id).unwrap();
                     let order = book
@@ -448,7 +445,7 @@ impl EconiaRedisCacher {
             .as_ref()
             .unwrap_or_else(|| book.get_order(e.market_order_id).expect("order not found"));
         self.send_order_update(conn, order)?;
-        self.send_price_level_update(conn, e.market_id, order.side, order.price)
+        self.send_price_level_update(conn, e.market_id, order.side, order.price, e.time)
     }
 
     fn handle_taker_event(
@@ -494,7 +491,7 @@ impl EconiaRedisCacher {
         }
 
         self.send_fill(conn, &fill)?;
-        self.send_price_level_update(conn, e.market_id, e.side.into(), e.price)
+        self.send_price_level_update(conn, e.market_id, e.side.into(), e.price, e.time)
     }
 
     fn start(&mut self, books: Vec<BigDecimal>) {

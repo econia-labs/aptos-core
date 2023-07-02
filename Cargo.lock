@@ -5460,8 +5460,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b10c03b954333d05bfd5be1d8a74eae2c9ca77b86e0f1c3a1ea29c49da1d6c2"
 dependencies = [
  "heck 0.4.0",
- "proc-macro2 1.0.58",
- "quote 1.0.27",
+ "proc-macro2 1.0.59",
+ "quote 1.0.28",
  "syn 1.0.105",
 ]
 
@@ -11947,7 +11947,7 @@ checksum = "f9456a42c5b0d803c8cd86e73dd7cc9edd429499f37a3550d286d5e86720569f"
 dependencies = [
  "proc-macro2 1.0.59",
  "quote 1.0.28",
- "syn 1.0.105",
+ "syn 2.0.18",
 ]
 
 [[package]]
@@ -12569,7 +12569,6 @@ checksum = "dcf81ac59edc17cc8697ff311e8f5ef2d99fcbd9817b34cec66f90b6c3dfd987"
 name = "types"
 version = "0.1.0"
 dependencies = [
- "bigdecimal",
  "chrono",
  "serde 1.0.149",
  "thiserror",
