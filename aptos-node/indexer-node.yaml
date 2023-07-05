@@ -31,7 +31,7 @@ storage:
 
 indexer:
     enabled: true
-    postgres_uri: "postgres://user:password@localhost:5432/indexer-db"
+    postgres_uri: "DATABASE_URL"
     processor: "econia_processor"
     check_chain_id: true
     emit_every: 500
