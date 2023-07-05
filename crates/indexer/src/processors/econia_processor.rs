@@ -43,39 +43,23 @@ use std::{collections::HashMap, ops::Not};
 
 pub const NAME: &str = "econia_processor";
 
-#[derive(Debug, Deserialize, Clone)]
-struct RedisConfig {
-    url: String,
-    book_prefix: String,
-    order_prefix: String,
-    fill_prefix: String,
-    markets: String,
-}
+const BOOK_PREFIX: &str = "book";
+const ORDER_PREFIX: &str = "orders";
+const FILL_PREFIX: &str = "fills";
+const MARKETS_CHANNEL: &str = "markets";
 
-#[derive(Debug, Deserialize)]
-struct EconiaConfig {
-    redis: RedisConfig,
-    econia_address: String,
-}
+static REDIS_URL: Lazy<String> =
+    Lazy::new(|| std::env::var("REDIS_URL").expect("REDIS_URL not set"));
 
-static ECONIA_CONFIG: Lazy<EconiaConfig> = Lazy::new(|| {
-    let path = std::env::var("ECONIA_CONFIG_PATH").expect("ECONIA_CONFIG not set");
-    let config_file = std::fs::File::open(path).expect("Failed to open econia config file");
-    serde_json::from_reader(config_file).expect("Failed to parse econia config file")
-});
+static ECONIA_ADDRESS: Lazy<String> =
+    Lazy::new(|| std::env::var("ECONIA_ADDRESS").expect("ECONIA_ADDRESS not set"));
 
 static EVENT_TYPES: Lazy<Vec<String>> = Lazy::new(|| {
     vec![
-        format!("{}::market::TakerEvent", &ECONIA_CONFIG.econia_address),
-        format!("{}::market::MakerEvent", &ECONIA_CONFIG.econia_address),
-        format!(
-            "{}::registry::MarketRegistrationEvent",
-            &ECONIA_CONFIG.econia_address
-        ),
-        format!(
-            "{}::registry::RecognizedMarketEvent",
-            &ECONIA_CONFIG.econia_address
-        ),
+        format!("{}::market::TakerEvent", &*ECONIA_ADDRESS),
+        format!("{}::market::MakerEvent", &*ECONIA_ADDRESS),
+        format!("{}::registry::MarketRegistrationEvent", &*ECONIA_ADDRESS),
+        format!("{}::registry::RecognizedMarketEvent", &*ECONIA_ADDRESS),
     ]
 });
 
@@ -263,7 +247,6 @@ enum MarketAction {
 
 struct EconiaRedisCacher {
     redis_client: redis::Client,
-    config: RedisConfig,
     // mkt_id => OrderBook
     books: HashMap<u64, OrderBook>,
     market_rx: channel::Receiver<MarketAction>,
@@ -272,14 +255,13 @@ struct EconiaRedisCacher {
 
 impl EconiaRedisCacher {
     fn new(
-        config: RedisConfig,
+        redis_url: &str,
         market_rx: channel::Receiver<MarketAction>,
         event_rx: channel::Receiver<EventWrapper>,
     ) -> Self {
-        let redis_client = redis::Client::open(&*config.url).expect("failed to connect to redis");
+        let redis_client = redis::Client::open(redis_url).expect("failed to connect to redis");
         Self {
             redis_client,
-            config,
             books: HashMap::new(),
             market_rx,
             event_rx,
@@ -291,7 +273,7 @@ impl EconiaRedisCacher {
         conn: &mut redis::Connection,
         mkt_id: BigDecimal,
     ) -> anyhow::Result<()> {
-        conn.hset(&self.config.markets, mkt_id.to_string(), 1)?;
+        conn.hset(MARKETS_CHANNEL, mkt_id.to_string(), 1)?;
         let mkt_id = mkt_id.to_u64().expect("failed to convert to u64");
 
         if self.books.get(&mkt_id).is_none() {
@@ -306,7 +288,7 @@ impl EconiaRedisCacher {
         conn: &mut redis::Connection,
         mkt_id: &BigDecimal,
     ) -> anyhow::Result<()> {
-        conn.hdel(&self.config.markets, mkt_id.to_string())?;
+        conn.hdel(MARKETS_CHANNEL, mkt_id.to_string())?;
         let mkt_id = mkt_id.to_u64().expect("failed to convert to u64");
         self.books.remove(&mkt_id);
         Ok(())
@@ -324,7 +306,7 @@ impl EconiaRedisCacher {
     }
 
     fn send_order_update(&self, conn: &mut redis::Connection, order: &Order) -> anyhow::Result<()> {
-        let channel_name = format!("{}:{}", &self.config.order_prefix, order.market_id);
+        let channel_name = format!("{}:{}", ORDER_PREFIX, order.market_id);
         let update = Update::Orders(order.clone());
         let message = serde_json::to_string(&update)?;
         conn.publish(channel_name, message)?;
@@ -332,7 +314,7 @@ impl EconiaRedisCacher {
     }
 
     fn send_fill(&self, conn: &mut redis::Connection, fill: &Fill) -> anyhow::Result<()> {
-        let channel_name = format!("{}:{}", &self.config.fill_prefix, fill.market_id);
+        let channel_name = format!("{}:{}", FILL_PREFIX, fill.market_id);
         let update = Update::Fills(fill.clone());
         let message = serde_json::to_string(&update)?;
         conn.publish(channel_name, message)?;
@@ -352,7 +334,7 @@ impl EconiaRedisCacher {
             .get_side(side)
             .get(&price)
             .map_or(0, |v| v.iter().fold(0, |i, s: &Order| i + s.size));
-        let channel_name = format!("{}:{}", &self.config.book_prefix, mkt_id);
+        let channel_name = format!("{}:{}", BOOK_PREFIX, mkt_id);
         let update = Update::PriceLevels(PriceLevelWithId {
             market_id: mkt_id,
             side,
@@ -491,7 +473,7 @@ impl EconiaRedisCacher {
         }
 
         self.send_fill(conn, &fill)?;
-        self.send_price_level_update(conn, e.market_id, e.side.into(), e.price, e.time)
+        self.send_price_level_update(conn, e.market_id, e.side, e.price, e.time)
     }
 
     fn start(&mut self, books: Vec<BigDecimal>) {
@@ -551,8 +533,7 @@ impl EconiaTransactionProcessor {
             .map(|m| m.key().clone())
             .collect::<Vec<BigDecimal>>();
         std::thread::spawn(move || {
-            let mut cacher =
-                EconiaRedisCacher::new(ECONIA_CONFIG.redis.clone(), market_rx, event_rx);
+            let mut cacher = EconiaRedisCacher::new(&REDIS_URL, market_rx, event_rx);
             cacher.start(books);
         });
 
