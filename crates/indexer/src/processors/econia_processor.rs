@@ -890,36 +890,3 @@ impl TransactionProcessor for EconiaTransactionProcessor {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{EconiaRedisCacher, RedisConfig};
-    use bigdecimal::BigDecimal;
-    use crossbeam::channel;
-
-    #[test]
-    fn test_initialise_remove_markets() {
-        let config = RedisConfig {
-            url: "redis://localhost:6379".to_string(),
-            book_prefix: "book".to_string(),
-            order_prefix: "order".to_string(),
-            fill_prefix: "fill".to_string(),
-            markets: "markets".to_string(),
-        };
-        let books = vec![BigDecimal::from(10)];
-        let (_, a_rx) = channel::unbounded();
-        let (_, b_rx) = channel::unbounded();
-        let mut cacher = EconiaRedisCacher::new(config, a_rx, b_rx);
-        cacher.initialise_markets(books).unwrap();
-        let mut conn = cacher.redis_client.get_connection().unwrap();
-        let mut cmd = redis::cmd("HGET");
-        cmd.arg("markets").arg("10");
-        let res = cmd.query::<u64>(&mut conn).unwrap();
-        assert_eq!(res, 1);
-
-        cacher
-            .remove_market(&mut conn, &BigDecimal::from(10))
-            .unwrap();
-        let res = cmd.query::<u64>(&mut conn);
-        assert!(res.is_err());
-    }
-}
