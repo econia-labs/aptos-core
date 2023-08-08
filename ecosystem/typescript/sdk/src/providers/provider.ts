@@ -14,20 +14,38 @@ type NetworkWithCustom = Network | "CUSTOM";
  * This class holds both AptosClient and IndexerClient classes's methods and properties so we
  * can instantiate the Provider class and use it to query full node and/or Indexer.
  *
- * @example An example of how to use this class
+ * NOTE: Indexer client can be undefined/not set when we use Network.LOCAL (since Indexer
+ * does not support local environment) or when we use a CUSTOM network to support applications
+ * that only use custom fullnode and not Indexer
+ *
+ * @example An example of how to use this class with a live network
  * ```
  * const provider = new Provider(Network.DEVNET)
  * const account = await provider.getAccount("0x123");
- * const accountNFTs = await provider.getAccountNFTs("0x123");
+ * const accountTokens = await provider.getOwnedTokens("0x123");
+ * ```
+ *
+ * @example An example of how to use this class with a local network. Indexer
+ * doesn't support local network.
+ * ```
+ * const provider = new Provider(Network.LOCAL)
+ * const account = await provider.getAccount("0x123");
+ * ```
+ *
+ * @example An example of how to use this class with a custom network.
+ * ```
+ * const provider = new Provider({fullnodeUrl:"my-fullnode-url",indexerUrl:"my-indexer-url"})
+ * const account = await provider.getAccount("0x123");
+ * const accountTokens = await provider.getOwnedTokens("0x123");
  * ```
  *
  * @param network enum of type Network - MAINNET | TESTNET | DEVNET | LOCAL or custom endpoints of type CustomEndpoints
- * @param config AptosClient config arg - additional configuration options for the generated Axios client.
+ * @param config optional ClientConfig config arg - additional configuration we can pass with the request to the server.
  */
 export class Provider {
   aptosClient: AptosClient;
 
-  indexerClient: IndexerClient;
+  indexerClient?: IndexerClient;
 
   network: NetworkWithCustom;
 
@@ -45,19 +63,14 @@ export class Provider {
       this.network = network;
     }
 
-    if (!fullNodeUrl) {
-      throw new Error("network is not provided, must provide a Network or a fullNodeUrl");
+    if (this.network === "CUSTOM" && !fullNodeUrl) {
+      throw new Error("fullnode url is not provided");
     }
 
-    // For local dev purposes and indexer URL may not be given
-    if (!indexerUrl && (this.network === "CUSTOM" || this.network === Network.LOCAL)) {
-      indexerUrl = "No indexer URL given";
-    } else {
-      throw new Error("network does not have an indexer URL");
+    if (indexerUrl) {
+      this.indexerClient = new IndexerClient(indexerUrl, config);
     }
-
     this.aptosClient = new AptosClient(fullNodeUrl, config, doNotFixNodeUrl);
-    this.indexerClient = new IndexerClient(indexerUrl, config);
   }
 }
 
@@ -104,10 +117,5 @@ applyMixin(Provider, IndexerClient, "indexerClient");
 
 // use exhaustive type predicates
 function isCustomEndpoints(network: CustomEndpoints): network is CustomEndpoints {
-  return (
-    network.fullnodeUrl !== undefined &&
-    typeof network.fullnodeUrl === "string" &&
-    network.indexerUrl !== undefined &&
-    typeof network.indexerUrl === "string"
-  );
+  return network.fullnodeUrl !== undefined && typeof network.fullnodeUrl === "string";
 }
