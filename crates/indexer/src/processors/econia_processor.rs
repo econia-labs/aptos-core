@@ -24,15 +24,15 @@ use crossbeam::channel;
 use dashmap::DashMap;
 use diesel::{result::Error, PgConnection};
 use econia_db::{
-    add_maker_event, add_taker_event, create_coin,
+    create_coin,
     error::DbError,
-    models::{self, coin::Coin, events::MakerEventType, market::MarketEventType, ToInsertable},
-    register_market,
+    models::{self, coin::Coin, market::MarketEventType, ToInsertable},
+    add_market_registration_event,
 };
 use econia_types::{
     book::{OrderBook, PriceLevelWithId},
     message::Update,
-    order::{Fill, Order, OrderState, Side},
+    order::{Order, Side},
 };
 use field_count::FieldCount;
 use once_cell::sync::Lazy;
@@ -141,75 +141,75 @@ struct RecognizedMarketEvent {
     time: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-struct MakerEvent {
-    custodian_id: String,
-    market_id: String,
-    market_order_id: String,
-    price: String,
-    side: bool,
-    size: String,
-    r#type: u8,
-    user: String,
-    time: String,
-}
-
-impl From<MakerEvent> for models::events::MakerEvent {
-    fn from(e: MakerEvent) -> Self {
-        Self {
-            custodian_id: e
-                .custodian_id
-                .is_empty()
-                .not()
-                .then_some(e.custodian_id.parse().unwrap()),
-            market_id: e.market_id.parse().unwrap(),
-            market_order_id: e.market_order_id.parse().unwrap(),
-            price: e.price.parse().unwrap(),
-            side: e.side.into(),
-            size: e.size.parse().unwrap(),
-            event_type: e.r#type.try_into().unwrap(),
-            user_address: e.user,
-            time: e.time.parse().unwrap(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct TakerEvent {
-    market_id: String,
-    side: bool,
-    market_order_id: String,
-    maker: String,
-    custodian_id: String,
-    size: String,
-    price: String,
-    time: String,
-}
-
-impl From<TakerEvent> for models::events::TakerEvent {
-    fn from(e: TakerEvent) -> Self {
-        Self {
-            custodian_id: e
-                .custodian_id
-                .is_empty()
-                .not()
-                .then_some(e.custodian_id.parse().unwrap()),
-            market_id: e.market_id.parse().unwrap(),
-            market_order_id: e.market_order_id.parse().unwrap(),
-            maker: e.maker.parse().unwrap(),
-            price: e.price.parse().unwrap(),
-            side: e.side.into(),
-            size: e.size.parse().unwrap(),
-            time: e.time.parse().unwrap(),
-        }
-    }
-}
+// #[derive(Debug, Deserialize, Clone)]
+// struct MakerEvent {
+//     custodian_id: String,
+//     market_id: String,
+//     market_order_id: String,
+//     price: String,
+//     side: bool,
+//     size: String,
+//     r#type: u8,
+//     user: String,
+//     time: String,
+// }
+//
+// impl From<MakerEvent> for models::events::MakerEvent {
+//     fn from(e: MakerEvent) -> Self {
+//         Self {
+//             custodian_id: e
+//                 .custodian_id
+//                 .is_empty()
+//                 .not()
+//                 .then_some(e.custodian_id.parse().unwrap()),
+//             market_id: e.market_id.parse().unwrap(),
+//             market_order_id: e.market_order_id.parse().unwrap(),
+//             price: e.price.parse().unwrap(),
+//             side: e.side.into(),
+//             size: e.size.parse().unwrap(),
+//             event_type: e.r#type.try_into().unwrap(),
+//             user_address: e.user,
+//             time: e.time.parse().unwrap(),
+//         }
+//     }
+// }
+//
+// #[derive(Debug, Deserialize, Clone)]
+// struct TakerEvent {
+//     market_id: String,
+//     side: bool,
+//     market_order_id: String,
+//     maker: String,
+//     custodian_id: String,
+//     size: String,
+//     price: String,
+//     time: String,
+// }
+//
+// impl From<TakerEvent> for models::events::TakerEvent {
+//     fn from(e: TakerEvent) -> Self {
+//         Self {
+//             custodian_id: e
+//                 .custodian_id
+//                 .is_empty()
+//                 .not()
+//                 .then_some(e.custodian_id.parse().unwrap()),
+//             market_id: e.market_id.parse().unwrap(),
+//             market_order_id: e.market_order_id.parse().unwrap(),
+//             maker: e.maker.parse().unwrap(),
+//             price: e.price.parse().unwrap(),
+//             side: e.side.into(),
+//             size: e.size.parse().unwrap(),
+//             time: e.time.parse().unwrap(),
+//         }
+//     }
+// }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 enum EventWrapper {
-    Maker(MakerEvent),
-    Taker(TakerEvent),
+    // Maker(MakerEvent),
+    // Taker(TakerEvent),
     MarketRegistration(MarketRegistrationEvent),
     RecognizedMarket(RecognizedMarketEvent),
 }
@@ -313,13 +313,13 @@ impl EconiaRedisCacher {
         Ok(())
     }
 
-    fn send_fill(&self, conn: &mut redis::Connection, fill: &Fill) -> anyhow::Result<()> {
-        let channel_name = format!("{}:{}", FILL_PREFIX, fill.market_id);
-        let update = Update::Fills(fill.clone());
-        let message = serde_json::to_string(&update)?;
-        conn.publish(channel_name, message)?;
-        Ok(())
-    }
+    // fn send_fill(&self, conn: &mut redis::Connection, fill: &Fill) -> anyhow::Result<()> {
+    //     let channel_name = format!("{}:{}", FILL_PREFIX, fill.market_id);
+    //     let update = Update::Fills(fill.clone());
+    //     let message = serde_json::to_string(&update)?;
+    //     conn.publish(channel_name, message)?;
+    //     Ok(())
+    // }
 
     fn send_price_level_update(
         &self,
@@ -347,134 +347,134 @@ impl EconiaRedisCacher {
         Ok(())
     }
 
-    fn handle_maker_event(
-        &mut self,
-        conn: &mut redis::Connection,
-        e: MakerEvent,
-    ) -> anyhow::Result<()> {
-        let e: models::events::MakerEvent = e.into();
-        let e: econia_types::events::MakerEvent = e.try_into()?;
-
-        if !self.books.contains_key(&e.market_id) {
-            panic!("invalid state, market is missing")
-        };
-
-        let removed_order = match MakerEventType::try_from(e.event_type)? {
-            MakerEventType::Cancel => {
-                let book = self.books.get_mut(&e.market_id).unwrap();
-                let mut order = book
-                    .remove_order(e.market_order_id)
-                    .expect("order not found");
-                order.order_state = OrderState::Cancelled;
-                Some(order)
-            },
-            MakerEventType::Change => {
-                let pop_and_reinsert = {
-                    let book = self.books.get(&e.market_id).unwrap();
-                    let order = book.get_order(e.market_order_id).expect("order not found");
-                    (order.price != e.price) || (e.size > order.size)
-                };
-                if pop_and_reinsert {
-                    let book = self.books.get_mut(&e.market_id).unwrap();
-                    let mut order = book
-                        .remove_order(e.market_order_id)
-                        .expect("order not found");
-                    let old_price = order.price;
-                    order.size = e.size;
-                    order.price = e.price;
-                    book.add_order(order);
-                    self.send_price_level_update(conn, e.market_id, e.side, old_price, e.time)?;
-                } else {
-                    let book = self.books.get_mut(&e.market_id).unwrap();
-                    let order = book
-                        .get_order_mut(e.market_order_id)
-                        .expect("order not found");
-                    order.size = e.size;
-                    order.price = e.price;
-                }
-
-                None
-            },
-            MakerEventType::Evict => {
-                let book = self.books.get_mut(&e.market_id).unwrap();
-                let mut order = book
-                    .remove_order(e.market_order_id)
-                    .expect("order not found");
-                order.order_state = OrderState::Evicted;
-                Some(order)
-            },
-            MakerEventType::Place => {
-                let o = Order {
-                    market_order_id: e.market_order_id,
-                    market_id: e.market_id,
-                    side: e.side,
-                    size: e.size,
-                    price: e.price,
-                    user_address: e.user_address,
-                    custodian_id: e.custodian_id,
-                    order_state: OrderState::Open,
-                    created_at: e.time,
-                };
-
-                let book = self.books.get_mut(&e.market_id).unwrap();
-                book.add_order(o);
-                None
-            },
-        };
-
-        let book = self.books.get(&e.market_id).unwrap();
-        let order = removed_order
-            .as_ref()
-            .unwrap_or_else(|| book.get_order(e.market_order_id).expect("order not found"));
-        self.send_order_update(conn, order)?;
-        self.send_price_level_update(conn, e.market_id, order.side, order.price, e.time)
-    }
-
-    fn handle_taker_event(
-        &mut self,
-        conn: &mut redis::Connection,
-        e: TakerEvent,
-    ) -> anyhow::Result<()> {
-        let e: models::events::TakerEvent = e.into();
-        let e: econia_types::events::TakerEvent = e.try_into()?;
-
-        if !self.books.contains_key(&e.market_id) {
-            panic!("invalid state, market is missing")
-        };
-
-        let book = self.books.get_mut(&e.market_id).unwrap();
-        let order = book
-            .get_order_mut(e.market_order_id)
-            .expect("order not found");
-
-        order.size = order.size.checked_sub(e.size).unwrap_or_default();
-
-        let fill = Fill {
-            market_id: e.market_id,
-            maker_order_id: e.market_order_id,
-            maker: e.maker.clone(),
-            maker_side: order.side,
-            custodian_id: order.custodian_id,
-            size: e.size,
-            price: e.price,
-            time: e.time,
-        };
-
-        if order.size == 0 {
-            order.order_state = OrderState::Filled;
-            let order = book
-                .remove_order(e.market_order_id)
-                .expect("order not found");
-            self.send_order_update(conn, &order)?;
-        } else {
-            let book = self.books.get(&e.market_id).unwrap();
-            let order = book.get_order(e.market_order_id).expect("order not found");
-            self.send_order_update(conn, order)?;
-        }
-
-        self.send_fill(conn, &fill)?;
-        self.send_price_level_update(conn, e.market_id, e.side, e.price, e.time)
-    }
+    // fn handle_maker_event(
+    //     &mut self,
+    //     conn: &mut redis::Connection,
+    //     e: MakerEvent,
+    // ) -> anyhow::Result<()> {
+    //     let e: models::events::MakerEvent = e.into();
+    //     let e: econia_types::events::MakerEvent = e.try_into()?;
+    //
+    //     if !self.books.contains_key(&e.market_id) {
+    //         panic!("invalid state, market is missing")
+    //     };
+    //
+    //     let removed_order = match MakerEventType::try_from(e.event_type)? {
+    //         MakerEventType::Cancel => {
+    //             let book = self.books.get_mut(&e.market_id).unwrap();
+    //             let mut order = book
+    //                 .remove_order(e.market_order_id)
+    //                 .expect("order not found");
+    //             order.order_state = OrderState::Cancelled;
+    //             Some(order)
+    //         },
+    //         MakerEventType::Change => {
+    //             let pop_and_reinsert = {
+    //                 let book = self.books.get(&e.market_id).unwrap();
+    //                 let order = book.get_order(e.market_order_id).expect("order not found");
+    //                 (order.price != e.price) || (e.size > order.size)
+    //             };
+    //             if pop_and_reinsert {
+    //                 let book = self.books.get_mut(&e.market_id).unwrap();
+    //                 let mut order = book
+    //                     .remove_order(e.market_order_id)
+    //                     .expect("order not found");
+    //                 let old_price = order.price;
+    //                 order.size = e.size;
+    //                 order.price = e.price;
+    //                 book.add_order(order);
+    //                 self.send_price_level_update(conn, e.market_id, e.side, old_price, e.time)?;
+    //             } else {
+    //                 let book = self.books.get_mut(&e.market_id).unwrap();
+    //                 let order = book
+    //                     .get_order_mut(e.market_order_id)
+    //                     .expect("order not found");
+    //                 order.size = e.size;
+    //                 order.price = e.price;
+    //             }
+    //
+    //             None
+    //         },
+    //         MakerEventType::Evict => {
+    //             let book = self.books.get_mut(&e.market_id).unwrap();
+    //             let mut order = book
+    //                 .remove_order(e.market_order_id)
+    //                 .expect("order not found");
+    //             order.order_state = OrderState::Evicted;
+    //             Some(order)
+    //         },
+    //         MakerEventType::Place => {
+    //             let o = Order {
+    //                 market_order_id: e.market_order_id,
+    //                 market_id: e.market_id,
+    //                 side: e.side,
+    //                 size: e.size,
+    //                 price: e.price,
+    //                 user_address: e.user_address,
+    //                 custodian_id: e.custodian_id,
+    //                 order_state: OrderState::Open,
+    //                 created_at: e.time,
+    //             };
+    //
+    //             let book = self.books.get_mut(&e.market_id).unwrap();
+    //             book.add_order(o);
+    //             None
+    //         },
+    //     };
+    //
+    //     let book = self.books.get(&e.market_id).unwrap();
+    //     let order = removed_order
+    //         .as_ref()
+    //         .unwrap_or_else(|| book.get_order(e.market_order_id).expect("order not found"));
+    //     self.send_order_update(conn, order)?;
+    //     self.send_price_level_update(conn, e.market_id, order.side, order.price, e.time)
+    // }
+    //
+    // fn handle_taker_event(
+    //     &mut self,
+    //     conn: &mut redis::Connection,
+    //     e: TakerEvent,
+    // ) -> anyhow::Result<()> {
+    //     let e: models::events::TakerEvent = e.into();
+    //     let e: econia_types::events::TakerEvent = e.try_into()?;
+    //
+    //     if !self.books.contains_key(&e.market_id) {
+    //         panic!("invalid state, market is missing")
+    //     };
+    //
+    //     let book = self.books.get_mut(&e.market_id).unwrap();
+    //     let order = book
+    //         .get_order_mut(e.market_order_id)
+    //         .expect("order not found");
+    //
+    //     order.size = order.size.checked_sub(e.size).unwrap_or_default();
+    //
+    //     let fill = Fill {
+    //         market_id: e.market_id,
+    //         maker_order_id: e.market_order_id,
+    //         maker: e.maker.clone(),
+    //         maker_side: order.side,
+    //         custodian_id: order.custodian_id,
+    //         size: e.size,
+    //         price: e.price,
+    //         time: e.time,
+    //     };
+    //
+    //     if order.size == 0 {
+    //         order.order_state = OrderState::Filled;
+    //         let order = book
+    //             .remove_order(e.market_order_id)
+    //             .expect("order not found");
+    //         self.send_order_update(conn, &order)?;
+    //     } else {
+    //         let book = self.books.get(&e.market_id).unwrap();
+    //         let order = book.get_order(e.market_order_id).expect("order not found");
+    //         self.send_order_update(conn, order)?;
+    //     }
+    //
+    //     self.send_fill(conn, &fill)?;
+    //     self.send_price_level_update(conn, e.market_id, e.side, e.price, e.time)
+    // }
 
     fn start(&mut self, books: Vec<BigDecimal>) {
         // initialise markets
@@ -493,8 +493,8 @@ impl EconiaRedisCacher {
                     MarketAction::Remove(m) => self.remove_market(&mut conn, &m).expect("failed to remove market"),
                 },
                 recv(self.event_rx) -> event => match event.unwrap() {
-                    EventWrapper::Maker(e) => self.handle_maker_event(&mut conn, e).expect("failed to handle maker event"),
-                    EventWrapper::Taker(e) => self.handle_taker_event(&mut conn, e).expect("failed to handle taker event"),
+                    // EventWrapper::Maker(e) => self.handle_maker_event(&mut conn, e).expect("failed to handle maker event"),
+                    // EventWrapper::Taker(e) => self.handle_taker_event(&mut conn, e).expect("failed to handle taker event"),
                     _ => panic!("received incorrect event in redis handler")
                 }
             };
@@ -618,8 +618,8 @@ impl EconiaTransactionProcessor {
         events: &[EventModel],
         block_to_time: &HashMap<i64, chrono::NaiveDateTime>,
     ) -> Result<(), Error> {
-        let mut maker = vec![];
-        let mut taker = vec![];
+        // let mut maker = vec![];
+        // let mut taker = vec![];
         let mut market_registration = vec![];
         let mut recognized_market = vec![];
 
@@ -638,18 +638,18 @@ impl EconiaTransactionProcessor {
                 .map_err(|e| Error::DeserializationError(Box::new(e)))?;
 
             match event_wrapper {
-                EventWrapper::Maker(e) => {
-                    self.event_tx
-                        .send(EventWrapper::Maker(e.clone()))
-                        .expect("maker event tx failed");
-                    maker.push(e);
-                },
-                EventWrapper::Taker(e) => {
-                    self.event_tx
-                        .send(EventWrapper::Taker(e.clone()))
-                        .expect("taker event tx failed");
-                    taker.push(e);
-                },
+                // EventWrapper::Maker(e) => {
+                //     self.event_tx
+                //         .send(EventWrapper::Maker(e.clone()))
+                //         .expect("maker event tx failed");
+                //     maker.push(e);
+                // },
+                // EventWrapper::Taker(e) => {
+                //     self.event_tx
+                //         .send(EventWrapper::Taker(e.clone()))
+                //         .expect("taker event tx failed");
+                //     taker.push(e);
+                // },
                 EventWrapper::MarketRegistration(e) => market_registration.push(e),
                 EventWrapper::RecognizedMarket(e) => recognized_market.push(e),
             }
@@ -662,11 +662,11 @@ impl EconiaTransactionProcessor {
         self.insert_event_types::<_, models::market::MarketRegistrationEvent, _>(
             conn,
             market_registration,
-            register_market,
+            add_market_registration_event,
         )?;
         self.insert_recognized_market_events(conn, recognized_market)?;
-        self.insert_event_types::<_, models::events::MakerEvent, _>(conn, maker, add_maker_event)?;
-        self.insert_event_types::<_, models::events::TakerEvent, _>(conn, taker, add_taker_event)?;
+        // self.insert_event_types::<_, models::events::MakerEvent, _>(conn, maker, add_maker_event)?;
+        // self.insert_event_types::<_, models::events::TakerEvent, _>(conn, taker, add_taker_event)?;
 
         Ok(())
     }
