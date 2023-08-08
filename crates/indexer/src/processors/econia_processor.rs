@@ -141,6 +141,101 @@ struct RecognizedMarketEvent {
     time: DateTime<Utc>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+struct CancelOrderEvent {
+    pub market_id: String,
+    pub order_id: String,
+    pub user: String,
+    pub custodian_id: String,
+    pub reason: String,
+    pub time: DateTime<Utc>,
+}
+
+impl From<CancelOrderEvent> for models::order::CancelOrderEvent {
+    fn from(value: CancelOrderEvent) -> Self {
+        Self {
+            market_id: value.market_id.parse().unwrap(),
+            order_id: value.order_id.parse().unwrap(),
+            user_address: value.user.parse().unwrap(),
+            custodian_id: value.custodian_id.parse::<BigDecimal>().ok(),
+            reason: value.reason.parse::<u8>().unwrap().into(),
+            time: value.time,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ChangeOrderSizeEvent {
+    pub market_id: String,
+    pub order_id: String,
+    pub user: String,
+    pub custodian_id: String,
+    pub side: Side,
+    pub new_size: String,
+    pub time: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct FillEvent {
+    pub market_id: String,
+    pub size: String,
+    pub price: String,
+    pub maker_side: Side,
+    pub maker: String,
+    pub maker_custodian_id: String,
+    pub maker_order_id: String,
+    pub taker: String,
+    pub taker_custodian_id: String,
+    pub taker_order_id: String,
+    pub taker_quote_fees_paid: String,
+    pub sequence_number_for_trade: String,
+    pub time: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PlaceLimitOrderEvent {
+    pub market_id: String,
+    pub user: String,
+    pub custodian_id: String,
+    pub integrator: Option<String>,
+    pub side: Side,
+    pub size: String,
+    pub price: String,
+    pub restriction: String,
+    pub self_match_behavior: String,
+    pub remaining_size: String,
+    pub order_id: String,
+    pub time: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PlaceMarketOrderEvent {
+    pub market_id: String,
+    pub user: String,
+    pub custodian_id: String,
+    pub integrator: String,
+    pub direction: Side,
+    pub size: String,
+    pub self_match_behavior: String,
+    pub order_id: String,
+    pub time: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PlaceSwapOrderEvent {
+    pub market_id: String,
+    pub signing_account: String,
+    pub integrator: Option<String>,
+    pub direction: Side,
+    pub min_base: String,
+    pub max_base: String,
+    pub min_quote: String,
+    pub max_quote: String,
+    pub limit_price: String,
+    pub order_id: String,
+    pub time: DateTime<Utc>,
+}
+
 // #[derive(Debug, Deserialize, Clone)]
 // struct MakerEvent {
 //     custodian_id: String,
