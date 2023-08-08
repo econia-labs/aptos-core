@@ -54,6 +54,7 @@ static REDIS_URL: Lazy<String> =
 static ECONIA_ADDRESS: Lazy<String> =
     Lazy::new(|| std::env::var("ECONIA_ADDRESS").expect("ECONIA_ADDRESS not set"));
 
+// TODO: make sure to update this
 static EVENT_TYPES: Lazy<Vec<String>> = Lazy::new(|| {
     vec![
         format!("{}::market::TakerEvent", &*ECONIA_ADDRESS),
