@@ -24,10 +24,9 @@ use crossbeam::channel;
 use dashmap::DashMap;
 use diesel::{result::Error, PgConnection};
 use econia_db::{
-    create_coin,
+    add_market_registration_event, create_coin,
     error::DbError,
     models::{self, coin::Coin, market::MarketEventType, ToInsertable},
-    add_market_registration_event,
 };
 use econia_types::{
     book::{OrderBook, PriceLevelWithId},
@@ -54,11 +53,14 @@ static REDIS_URL: Lazy<String> =
 static ECONIA_ADDRESS: Lazy<String> =
     Lazy::new(|| std::env::var("ECONIA_ADDRESS").expect("ECONIA_ADDRESS not set"));
 
-// TODO: make sure to update this
 static EVENT_TYPES: Lazy<Vec<String>> = Lazy::new(|| {
     vec![
-        format!("{}::market::TakerEvent", &*ECONIA_ADDRESS),
-        format!("{}::market::MakerEvent", &*ECONIA_ADDRESS),
+        format!("{}::user::CancelOrderEvent", &*ECONIA_ADDRESS),
+        format!("{}::user::ChangeOrderSize", &*ECONIA_ADDRESS),
+        format!("{}::user::FillEvent", &*ECONIA_ADDRESS),
+        format!("{}::user::PlaceLimitOrderEvent", &*ECONIA_ADDRESS),
+        format!("{}::user::PlaceMarketOrderEvent", &*ECONIA_ADDRESS),
+        format!("{}::market::PlaceSwapOrderEvent", &*ECONIA_ADDRESS),
         format!("{}::registry::MarketRegistrationEvent", &*ECONIA_ADDRESS),
         format!("{}::registry::RecognizedMarketEvent", &*ECONIA_ADDRESS),
     ]
@@ -171,9 +173,23 @@ pub struct ChangeOrderSizeEvent {
     pub order_id: String,
     pub user: String,
     pub custodian_id: String,
-    pub side: Side,
+    pub side: bool,
     pub new_size: String,
     pub time: DateTime<Utc>,
+}
+
+impl From<ChangeOrderSizeEvent> for models::order::ChangeOrderSizeEvent {
+    fn from(value: ChangeOrderSizeEvent) -> Self {
+        Self {
+            market_id: value.market_id.parse().unwrap(),
+            order_id: value.order_id.parse().unwrap(),
+            user_address: value.user.parse().unwrap(),
+            custodian_id: value.custodian_id.parse::<BigDecimal>().ok(),
+            side: value.side.into(),
+            new_size: value.new_size.parse().unwrap(),
+            time: value.time,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -193,13 +209,33 @@ pub struct FillEvent {
     pub time: DateTime<Utc>,
 }
 
+impl From<FillEvent> for models::order::FillEvent {
+    fn from(value: FillEvent) -> Self {
+        Self {
+            market_id: value.market_id.parse().unwrap(),
+            size: value.size.parse().unwrap(),
+            price: value.price.parse().unwrap(),
+            maker_side: value.maker_side.into(),
+            maker: value.maker,
+            maker_custodian_id: value.maker_custodian_id.parse::<BigDecimal>().ok(),
+            maker_order_id: value.maker_order_id.parse().unwrap(),
+            taker: value.taker,
+            taker_custodian_id: value.taker_custodian_id.parse::<BigDecimal>().ok(),
+            taker_order_id: value.taker_order_id.parse().unwrap(),
+            taker_quote_fees_paid: value.taker_quote_fees_paid.parse().unwrap(),
+            sequence_number_for_trade: value.sequence_number_for_trade.parse().unwrap(),
+            time: value.time,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct PlaceLimitOrderEvent {
     pub market_id: String,
     pub user: String,
     pub custodian_id: String,
     pub integrator: Option<String>,
-    pub side: Side,
+    pub side: bool,
     pub size: String,
     pub price: String,
     pub restriction: String,
@@ -209,17 +245,52 @@ pub struct PlaceLimitOrderEvent {
     pub time: DateTime<Utc>,
 }
 
+impl From<PlaceLimitOrderEvent> for models::order::PlaceLimitOrderEvent {
+    fn from(value: PlaceLimitOrderEvent) -> Self {
+        Self {
+            market_id: value.market_id.parse().unwrap(),
+            user_address: value.user.parse().unwrap(),
+            custodian_id: value.custodian_id.parse::<BigDecimal>().ok(),
+            integrator: value.integrator,
+            side: value.side.into(),
+            size: value.size.parse().unwrap(),
+            price: value.price.parse().unwrap(),
+            restriction: value.restriction.parse::<u8>().unwrap().into(),
+            self_match_behavior: value.self_match_behavior.parse::<u8>().unwrap().into(),
+            remaining_size: value.remaining_size.parse().unwrap(),
+            order_id: value.order_id.parse().unwrap(),
+            time: value.time,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct PlaceMarketOrderEvent {
     pub market_id: String,
     pub user: String,
     pub custodian_id: String,
-    pub integrator: String,
+    pub integrator: Option<String>,
     pub direction: Side,
     pub size: String,
     pub self_match_behavior: String,
     pub order_id: String,
     pub time: DateTime<Utc>,
+}
+
+impl From<PlaceMarketOrderEvent> for models::order::PlaceMarketOrderEvent {
+    fn from(value: PlaceMarketOrderEvent) -> Self {
+        Self {
+            market_id: value.market_id.parse().unwrap(),
+            user_address: value.user.parse().unwrap(),
+            custodian_id: value.custodian_id.parse::<BigDecimal>().ok(),
+            integrator: value.integrator,
+            direction: value.direction.into(),
+            size: value.size.parse().unwrap(),
+            self_match_behavior: value.self_match_behavior.parse::<u8>().unwrap().into(),
+            order_id: value.order_id.parse().unwrap(),
+            time: value.time,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -237,75 +308,33 @@ pub struct PlaceSwapOrderEvent {
     pub time: DateTime<Utc>,
 }
 
-// #[derive(Debug, Deserialize, Clone)]
-// struct MakerEvent {
-//     custodian_id: String,
-//     market_id: String,
-//     market_order_id: String,
-//     price: String,
-//     side: bool,
-//     size: String,
-//     r#type: u8,
-//     user: String,
-//     time: String,
-// }
-//
-// impl From<MakerEvent> for models::events::MakerEvent {
-//     fn from(e: MakerEvent) -> Self {
-//         Self {
-//             custodian_id: e
-//                 .custodian_id
-//                 .is_empty()
-//                 .not()
-//                 .then_some(e.custodian_id.parse().unwrap()),
-//             market_id: e.market_id.parse().unwrap(),
-//             market_order_id: e.market_order_id.parse().unwrap(),
-//             price: e.price.parse().unwrap(),
-//             side: e.side.into(),
-//             size: e.size.parse().unwrap(),
-//             event_type: e.r#type.try_into().unwrap(),
-//             user_address: e.user,
-//             time: e.time.parse().unwrap(),
-//         }
-//     }
-// }
-//
-// #[derive(Debug, Deserialize, Clone)]
-// struct TakerEvent {
-//     market_id: String,
-//     side: bool,
-//     market_order_id: String,
-//     maker: String,
-//     custodian_id: String,
-//     size: String,
-//     price: String,
-//     time: String,
-// }
-//
-// impl From<TakerEvent> for models::events::TakerEvent {
-//     fn from(e: TakerEvent) -> Self {
-//         Self {
-//             custodian_id: e
-//                 .custodian_id
-//                 .is_empty()
-//                 .not()
-//                 .then_some(e.custodian_id.parse().unwrap()),
-//             market_id: e.market_id.parse().unwrap(),
-//             market_order_id: e.market_order_id.parse().unwrap(),
-//             maker: e.maker.parse().unwrap(),
-//             price: e.price.parse().unwrap(),
-//             side: e.side.into(),
-//             size: e.size.parse().unwrap(),
-//             time: e.time.parse().unwrap(),
-//         }
-//     }
-// }
+impl From<PlaceSwapOrderEvent> for models::order::PlaceSwapOrderEvent {
+    fn from(value: PlaceSwapOrderEvent) -> Self {
+        Self {
+            market_id: value.market_id.parse().unwrap(),
+            signing_account: value.signing_account.parse().unwrap(),
+            integrator: value.integrator,
+            direction: value.direction.into(),
+            min_base: value.min_base.parse().unwrap(),
+            max_base: value.max_base.parse().unwrap(),
+            min_quote: value.min_quote.parse().unwrap(),
+            max_quote: value.max_quote.parse().unwrap(),
+            limit_price: value.limit_price.parse().unwrap(),
+            order_id: value.order_id.parse().unwrap(),
+            time: value.time,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 enum EventWrapper {
-    // Maker(MakerEvent),
-    // Taker(TakerEvent),
+    CancelOrder(CancelOrderEvent),
+    ChangeOrderSize(ChangeOrderSizeEvent),
+    Fill(FillEvent),
+    PlaceLimitOrder(PlaceLimitOrderEvent),
+    PlaceMarketOrder(PlaceMarketOrderEvent),
+    PlaceSwapOrder(PlaceSwapOrderEvent),
     MarketRegistration(MarketRegistrationEvent),
     RecognizedMarket(RecognizedMarketEvent),
 }
@@ -748,6 +777,7 @@ impl EconiaTransactionProcessor {
                 // },
                 EventWrapper::MarketRegistration(e) => market_registration.push(e),
                 EventWrapper::RecognizedMarket(e) => recognized_market.push(e),
+                _ => todo!(),
             }
         }
 
@@ -985,4 +1015,3 @@ impl TransactionProcessor for EconiaTransactionProcessor {
         &self.connection_pool
     }
 }
-
