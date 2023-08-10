@@ -24,7 +24,9 @@ use crossbeam::channel;
 use dashmap::DashMap;
 use diesel::{result::Error, PgConnection};
 use econia_db::{
-    add_market_registration_event, create_coin,
+    add_cancel_order_event, add_change_order_size_event, add_fill_event,
+    add_market_registration_event, add_place_limit_order_event, add_place_market_order_event,
+    add_place_swap_order_event, create_coin,
     error::DbError,
     models::{self, coin::Coin, market::MarketEventType, ToInsertable},
 };
@@ -600,6 +602,29 @@ impl EconiaRedisCacher {
     //     self.send_fill(conn, &fill)?;
     //     self.send_price_level_update(conn, e.market_id, e.side, e.price, e.time)
     // }
+    fn handle_cancel_order_event(&mut self, _conn: &mut redis::Connection) {
+        todo!()
+    }
+
+    fn handle_change_order_size_event(&mut self, _conn: &mut redis::Connection) {
+        todo!()
+    }
+
+    fn handle_fill_event(&mut self, _conn: &mut redis::Connection) {
+        todo!()
+    }
+
+    fn handle_place_limit_order_event(&mut self, _conn: &mut redis::Connection) {
+        todo!()
+    }
+
+    fn handle_place_market_order_event(&mut self, _conn: &mut redis::Connection) {
+        todo!()
+    }
+
+    fn handle_place_swap_order_event(&mut self, _conn: &mut redis::Connection) {
+        todo!()
+    }
 
     fn start(&mut self, books: Vec<BigDecimal>) {
         // initialise markets
@@ -618,11 +643,16 @@ impl EconiaRedisCacher {
                     MarketAction::Remove(m) => self.remove_market(&mut conn, &m).expect("failed to remove market"),
                 },
                 recv(self.event_rx) -> event => match event.unwrap() {
-                    // EventWrapper::Maker(e) => self.handle_maker_event(&mut conn, e).expect("failed to handle maker event"),
-                    // EventWrapper::Taker(e) => self.handle_taker_event(&mut conn, e).expect("failed to handle taker event"),
-                    _ => panic!("received incorrect event in redis handler")
+                    EventWrapper::CancelOrder(_) => todo!(),
+                    EventWrapper::ChangeOrderSize(_) => todo!(),
+                    EventWrapper::Fill(_) => todo!(),
+                    EventWrapper::PlaceLimitOrder(_) => todo!(),
+                    EventWrapper::PlaceMarketOrder(_) => todo!(),
+                    EventWrapper::PlaceSwapOrder(_) => todo!(),
+                    EventWrapper::MarketRegistration(_) => todo!(),
+                    EventWrapper::RecognizedMarket(_) => todo!(),
                 }
-            };
+            }
         }
     }
 }
@@ -743,10 +773,14 @@ impl EconiaTransactionProcessor {
         events: &[EventModel],
         block_to_time: &HashMap<i64, chrono::NaiveDateTime>,
     ) -> Result<(), Error> {
-        // let mut maker = vec![];
-        // let mut taker = vec![];
         let mut market_registration = vec![];
         let mut recognized_market = vec![];
+        let mut cancel_events = vec![];
+        let mut change_size_events = vec![];
+        let mut fill_events = vec![];
+        let mut place_limit_order_events = vec![];
+        let mut place_market_order_events = vec![];
+        let mut place_swap_order_events = vec![];
 
         for event in events.iter() {
             let current_time = block_to_time
@@ -763,21 +797,44 @@ impl EconiaTransactionProcessor {
                 .map_err(|e| Error::DeserializationError(Box::new(e)))?;
 
             match event_wrapper {
-                // EventWrapper::Maker(e) => {
-                //     self.event_tx
-                //         .send(EventWrapper::Maker(e.clone()))
-                //         .expect("maker event tx failed");
-                //     maker.push(e);
-                // },
-                // EventWrapper::Taker(e) => {
-                //     self.event_tx
-                //         .send(EventWrapper::Taker(e.clone()))
-                //         .expect("taker event tx failed");
-                //     taker.push(e);
-                // },
                 EventWrapper::MarketRegistration(e) => market_registration.push(e),
                 EventWrapper::RecognizedMarket(e) => recognized_market.push(e),
-                _ => todo!(),
+                EventWrapper::CancelOrder(e) => {
+                    self.event_tx
+                        .send(EventWrapper::CancelOrder(e.clone()))
+                        .expect("cancel order event tx failed");
+                    cancel_events.push(e);
+                },
+                EventWrapper::ChangeOrderSize(e) => {
+                    self.event_tx
+                        .send(EventWrapper::ChangeOrderSize(e.clone()))
+                        .expect("change order size event tx failed");
+                    change_size_events.push(e);
+                },
+                EventWrapper::Fill(e) => {
+                    self.event_tx
+                        .send(EventWrapper::Fill(e.clone()))
+                        .expect("fill event tx failed");
+                    fill_events.push(e);
+                },
+                EventWrapper::PlaceLimitOrder(e) => {
+                    self.event_tx
+                        .send(EventWrapper::PlaceLimitOrder(e.clone()))
+                        .expect("place limit order event tx failed");
+                    place_limit_order_events.push(e);
+                },
+                EventWrapper::PlaceMarketOrder(e) => {
+                    self.event_tx
+                        .send(EventWrapper::PlaceMarketOrder(e.clone()))
+                        .expect("place market order event tx failed");
+                    place_market_order_events.push(e);
+                },
+                EventWrapper::PlaceSwapOrder(e) => {
+                    self.event_tx
+                        .send(EventWrapper::PlaceSwapOrder(e.clone()))
+                        .expect("place swap order event tx failed");
+                    place_swap_order_events.push(e);
+                },
             }
         }
 
@@ -791,8 +848,36 @@ impl EconiaTransactionProcessor {
             add_market_registration_event,
         )?;
         self.insert_recognized_market_events(conn, recognized_market)?;
-        // self.insert_event_types::<_, models::events::MakerEvent, _>(conn, maker, add_maker_event)?;
-        // self.insert_event_types::<_, models::events::TakerEvent, _>(conn, taker, add_taker_event)?;
+        self.insert_event_types::<_, models::order::CancelOrderEvent, _>(
+            conn,
+            cancel_events,
+            add_cancel_order_event,
+        )?;
+        self.insert_event_types::<_, models::order::ChangeOrderSizeEvent, _>(
+            conn,
+            change_size_events,
+            add_change_order_size_event,
+        )?;
+        self.insert_event_types::<_, models::order::FillEvent, _>(
+            conn,
+            fill_events,
+            add_fill_event,
+        )?;
+        self.insert_event_types::<_, models::order::PlaceLimitOrderEvent, _>(
+            conn,
+            place_limit_order_events,
+            add_place_limit_order_event,
+        )?;
+        self.insert_event_types::<_, models::order::PlaceMarketOrderEvent, _>(
+            conn,
+            place_market_order_events,
+            add_place_market_order_event,
+        )?;
+        self.insert_event_types::<_, models::order::PlaceSwapOrderEvent, _>(
+            conn,
+            place_swap_order_events,
+            add_place_swap_order_event,
+        )?;
 
         Ok(())
     }
